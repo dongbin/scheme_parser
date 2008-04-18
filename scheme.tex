@@ -1,0 +1,479 @@
+\documentclass{article}
+\XeTeXlinebreaklocale "zh"
+\XeTeXlinebreakskip = 0pt plus 1pt minus 0.1pt
+
+\usepackage{fontspec}
+\usepackage{color}
+\usepackage{xunicode}
+\usepackage{xltxtra}
+\usepackage{listings}
+
+\linespread{1.36}
+\setromanfont{AR PL ShanHeiSun Uni}
+
+\lstset{
+framexleftmargin=5mm,frame=single,
+keywordstyle=\color{blue!70}}
+
+\title{编写 Scheme 解释器 Step by Step}
+\author{董彬}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{引言}
+亲手实现一个解释器能够让你深刻理解解释器的工作原理，对于理解编程本质很有帮助。本文将简单介绍解释器的实现原理，并且教你使用 Ruby
+语言和 TreeTop 框架简单快速地实现一个 Scheme 解释器。
+
+\section{Scheme 语言}
+Scheme 是 Lisp 的一个方言。Lisp 是最古老的现存编程语言之一，具有三十多
+年的历史，随着函数式编程的兴起，LISP社区又在展现勃勃生机。
+
+为什么笔者要实现一个 Scheme 解释器呢？这要从“Structure and
+Interpretation of Computer Programs”（简称 SICP）\footnote{中文版《计
+  算机程序的构造和解释》，机械工业出版社出版}这本书谈起。这本书是MIT程
+序设计的本科生教科书，让我对对程序设计方法学有了深刻理解。SICP 之所以选择 Lisp所谓教学语言，是因为Lisp具有最简单的语法结
+构和高度的灵活性。
+
+此书第4章讲解了如何实现一个Lisp解释器，文中的实现语言也是Lisp。整章解
+释器实现的代码非常详尽，但是篇幅太长。读者很难跟随此书亲自编写解释器。
+笔者是一个Ruby语言爱好者，所以决定采用 Ruby 语言并且借用语法分析工具 TreeTop
+，用最少的代码来快速实现一个Lisp解释器。以便让读者能够跟随笔者的脚步来
+动手实践，实现一个Lisp解释器。
+\subsection{ Scheme表达式 }
+Scheme表达式是一对括号括起来的一系列元素，最左面的元素称为运算符，其他
+元素称为运算对象。表达式的求值结果就是将运算符所表达的过程应用于运算对
+象。例如：
+\begin{verbatim}
+(+ 1 2)
+-> 3
+\end{verbatim}
+表达式也可以嵌套，也就是说运算符或者运算对象也可以是表达式
+\begin{verbatim}
+(+ 1 (+ 1 2))
+-> 4
+\end{verbatim}
+\subsection{变量和过程的定义}
+在 Scheme 中， 通过 define 关键字来定义变量：
+\begin{verbatim}
+(define pi 3.14)
+\end{verbatim}
+然后通过名字引用变量
+\begin{verbatim}
+pi
+-> 3.14
+\end{verbatim}
+过程的定义跟变量类似：
+\begin{verbatim}
+(define (square x) (* x x))
+\end{verbatim}
+定义之后就可以使用了：
+\begin{verbatim}
+(square 2)
+-> 4
+\end{verbatim}
+Lisp中的符号既可以绑定数值，还可以绑定过程。
+\section{Treetop介绍}
+
+\subsection{Ruby的语法树解析器}
+
+编程语言的解释和自然语言类似，由两部分组成：语法和语义。语法代表语句结
+构，好比自然语言的主谓宾。语义是语句的含义。解释器需要首先对输入的字符
+序列构造一棵抽象语法树，然后执行每个节点对应的语义。使用 Ruby 生成语
+法树有多种方案，笔者尝试了以下几种：
+\begin{enumerate}
+\item Racc：Yacc的Ruby实现，包含在 Ruby 安装包中，兼容 YACC 语法，可以
+  生成语法解析的Ruby实现。缺点是 YACC 语法太复杂，初学者不易掌握。
+\item Recursive Descent Parser ，不生成 Parser 代码，而是在框架基础上
+  手工编写 Parser，用Ruby语言来描述语法。优点是不需要生成代码，便于维护。缺点 是受到 Ruby
+  语言的限制，语法描述不够简洁。
+\item Treetop：开源的语法树生成器，通过 gem 安装。Treetop的优点是：
+  \begin{itemize}
+  \item 使用 PEG (Parsing Expression Grammar)来描述语法，简单易懂。
+  \item 通过节点绑定Ruby类的方式，可以使用面向对象的方式来组织和封装解释器代码。
+  \end{itemize}
+
+\end{enumerate}
+经过比较，笔者选用 Treetop 作为 Parser 生成器。
+\subsection{使用Treetop进行语法识别}
+
+Treetop的语法结构如下：
+\begin{lstlisting}
+#my_grammar.treetop
+grammar MyGrammar
+  rule number
+    ... ...
+  end
+  rule string
+    ... ...
+  end
+end
+\end{lstlisting}
+
+在 my\_grammar.treetop 中，有两个关键字：
+\begin{itemize}
+\item grammar ： 定义一个新语法
+\item rule ： 定义一个语法规则，后面跟着一个可以被其他规则所引用的名字。
+\end{itemize}
+每个 rule 关联一个名字和一个解析表达式（Parsing Expression，以下简称PE）。PE是一种正则表达式的变种，其最重要的特性是可以在表达式中通过名字引用其
+他解析表达式。根据可否引用其他表达式，PE可以分为两种：
+Terminal Symbols 和 Nonterminal Symbols
+
+\subsubsection{Terminal Symbols}
+Terminal Symbols 指的是原子表达式，包括字符串和字符：
+\begin{itemize}
+\item 字符串由单引号或者双引号括起来，比如 'hello'，“Hello”
+\item 字符跟正则表达式中的字符一样，比如 [0-9]，[a-z]
+\end{itemize}
+
+\subsubsection{出现次数}
+跟正则表达式一样，PE可以描述出现次数。
+\begin{itemize}
+\item 'foo'* 零次或多次
+\item 'foo'+ 一次或多次
+\item 'foo'? 一次或零次
+\end{itemize}
+
+\subsubsection{Nonterminal Symbols}
+Nonterminal Symbols 指的是表达式中引用其他 rule，引用的效果等价于C语言
+中的宏。例如：
+
+\begin{lstlisting}
+rule hello
+  "hello " name
+end
+
+rule name
+  "dongbin"
+end
+\end{lstlisting}
+
+等价于用name中描述的模式替换hello中对name的引用：
+
+\begin{lstlisting}
+rule hello
+  "hello dongbin"
+end
+\end{lstlisting}
+
+\subsubsection{元素选择}
+解析器可以从一系列元素中顺序匹配，直到找到匹配的元素为止。比如
+\begin{lstlisting}
+  "foobar" / "foo" / "bar"
+\end{lstlisting}
+会匹配 "foobar" ，"foo" 或者 “bar”。注意解析器按照从左到右的顺序进行匹
+配，元素的顺序会影响匹配结果。
+
+\section{编写Scheme解释器}
+
+\subsection{解释器的结构}
+
+解释器的执行原理是：
+\begin{itemize}
+\item 根据语法定义，把输入的文本转换成一棵语法树。
+\item 根据语义定义，对根节点求值，这个求值过程会递归地对子节点求值，直到返回数值。
+\end{itemize}
+
+对于每一个语法节点，要分别定义语法和语义：
+\begin{description}
+  \item[语法定义] 描述语法节点的结构。如果使用 Treetop，就是 \em{rule} 代码块中的PE。
+  \item[语义定义] 描述语法节点的求值过程。在本文中，每个语法节点都会有
+    一个名为\em{eval}的Ruby函数来求值，该方法接受一个Hash类型参数，作为求值的环境。。
+\end{description}
+
+环境是什么？ 在这里引用一下 SICP 中环境的定义：\em{我们可以将值与符号
+  关联，而后又能提取出这些值，这意味着解释器必须维护某种存储能力，以便
+  保持有关的“名字－值”对偶的轨迹。这种存储被称为环境。}\footnote{《计算
+    机程序的构造和解释》，P5-6}
+\subsection{语义解析}
+语义解析就是对语法节点进行求值的过程。如何使用Treetop对语法节点进行求值呢？举个例子，我们要求值：
+\begin{verbatim}
+(+ 1 (+ 3 2))
+\end{verbatim}
+我们的Parser就会生成类似  一棵语法树。树中每一个节点都是一个
+Treetop::Runtime::SyntaxNode 实例。Treetop 允许我们在每一个节点对象上
+自定义方法，这样节点的操作就可以被封装在SyntaxNode的定义中，我们就可以
+按照面向对象的方式组织解释器的结构。
+
+SyntaxNode 类有一些内建的方法，本文只用到了 text\_value 方法。此方法返
+回语法节点的被匹配到的文本形式。例如
+\begin{verbatim}
+  rule number
+    [1-9] [0-9]*
+  end
+\end{verbatim}
+匹配到 \em{10} 这个文本，那么text\_value返回字符串“10”。
+
+
+Treetop提供了两种方式来自定义 SyntaxNode ：
+\begin{enumerate}
+\item 内联方法定义。在 treetop文件中，某个rule对应的方法定义可以写在
+  rule的定义内部：
+\begin{lstlisting}
+  rule number
+    [1-9] [0-9]* {
+      def eval(env={})
+        text_value.to_f
+      end
+    }
+  end
+\end{lstlisting}
+这个 number rule 生成的 SyntaxNode 实例就具有 eval 方法。
+\item 子类定义。如果某个rule所对应的Ruby代码过多，放在grammer文件中太
+  臃肿，我们可以把Ruby代码写在另一个 .rb 文件里面，然后用尖括号来引用
+  类名。
+\begin{lstlisting}
+  rule number
+    [1-9] [0-9]* <Number>
+  end
+
+  # nodes.rb
+class NumberNode < Treetop::Runtime::SyntaxNode
+  def eval(env={})
+    text_value.to_f
+  end
+end
+\end{lstlisting}
+
+\end{enumerate}
+背景知识介绍到这里，下面进入编写Scheme解释器的实战阶段。Let's go!
+
+\subsection{语法定义}
+下面我们开始以自顶向下地定义语法。Treetop规定，\em{grammer} 中定义的第
+一个 \em{rule} 是 语法树的根节点。它描述了输入文本的总体语法结构。对于 Scheme 方言，根节点是由一个或者多个表
+达式（expression） 组成：
+\begin{verbatim}
+grammar Scheme
+
+  rule program
+    expression expressions <Program>
+  end
+
+  rule expressions
+    expression*
+  end
+
+end
+\end{verbatim}
+
+Program 类描述了一个完整 Lisp 程序求值的过程，它的定义如下：
+\begin{verbatim}
+class Program < Treetop::Runtime::SyntaxNode
+  def eval(env={})
+    exprs.inject(nil){ |last_env, exp|
+      exp.eval(env)
+    }
+  end
+
+  def exprs
+    [expression] + expressions.exprs
+  end
+
+end
+\end{verbatim}
+\subsubsection{expression 定义}
+Scheme的表达式分为以下几种：
+\begin{description}
+\item[数值]数字，字符串等可以直接求值的元素，分别用 \em{number}和
+  \em{string}来表示。
+\item[符号]需要从环境中查找符号对应的数值，用 \em{symbol}表示。
+\item[原子过程]可以直接求值的运算，包括 +， -，*和/，用 \em{primary}表
+  示
+
+\item[复合过程]不能直接求值，需要解释器将过程定义应用于实际参数才能求
+  值，用
+  \em{function}表示。
+\item[变量定义] 定义变量的语法，用 \em{defination}表示。
+\item[过程定义] 定义过程的语法，用 \em{define\_function}表示。
+\end{description}
+用PE描述 expression 的结构如下：
+
+\begin{verbatim}
+  rule expression
+    # 给 expression 中可能出现的元素起个别名，便于在 eval 函数中引用。
+    space e:(atom / primary/ defination / define_function / function) space {
+      def eval(env = {})
+        e.eval(env)
+      end
+    }
+  end
+  rule space
+    [ \n]*
+  end
+  rule atom
+    string / number / symbol
+  end
+
+\end{verbatim}
+为了定义 expression rule，我们又新引入了两个 rule：
+\begin{itemize}
+\item 用 atom 来代表number，string或者symbol。使用 Nonterminal
+Symbols来组织和分类rule能够提高grammer的可读性和可维护性。
+\item 用 space 来代表空白。语法定义中常常会出现这种字符串常量，定义
+  rule来描述常量能够提高灵活性。
+\end{itemize}
+
+\subsubsection{atom 定义}
+下面定义 string和number， symbol的定义我们稍后再讲。
+\begin{verbatim}
+  rule string
+    '"' (!'"' . / '\"')* '"' {
+      def eval(env={})
+        text_value[1..-2]
+      end
+    }
+  end
+
+  rule number
+    [1-9] [0-9]* {
+      def eval(env={})
+        text_value.to_f
+      end
+    }
+  end
+
+\end{verbatim}
+
+\subsubsection{原子过程定义}
+对于原子过程，我们只定义加减乘除四个过程。
+\begin{verbatim}
+  rule primary
+    plus / minus / multiply / divide
+  end
+
+  rule divide
+    lparen '/' dividend:expression divisor:expression  rparen {
+      def eval(env={})
+        dividend.eval(env) / divisor.eval(env)
+      end
+    }
+  end
+
+  rule multiply
+    lparen '*' expressions rparen {
+      def eval(env={})
+        expressions.exprs_value(env).inject{ |a, b| a * b}
+      end
+    }
+  end
+
+  rule minus
+    lparen '-' minuend:expression substractor:expression rparen {
+      def eval(env={})
+        minuend.eval(env) - substractor.eval(env)
+      end
+    }
+  end
+
+  rule plus
+    lparen '+' expressions  rparen {
+      def eval(env={})
+        expressions.exprs_value(env).inject{ |a, b| a + b}
+      end
+    }
+  end
+
+  rule lparen
+    space '(' space
+  end
+
+  rule rparen
+    space ')' space
+  end
+
+\end{verbatim}
+
+\subsubsection{变量的定义和求值}
+变量的定义过程就是向环境中插入一个\em{key－value}对，其中key是变量
+名，value是字符串，数值，或者一个过程。
+\begin{verbatim}
+  rule defination
+    lparen define symbol space expression rparen {
+      def eval(env)
+        env[symbol.name] = expression.eval(env)
+      end
+    }
+  end
+
+  rule define
+    space 'define' space
+  end
+
+
+\end{verbatim}
+变量求值就是把值从环境中取出来。取值的过程就是symbol求值的过程，下面定
+义symbol：
+\begin{verbatim}
+  rule symbol
+    space [a-z] ([a-z] / [0-9] / [_])* {
+      def eval(env)
+        env[name]
+      end
+      def name
+        text_value.strip
+      end
+    }
+  end
+
+\end{verbatim}
+
+\subsubsection{复合过程}
+最复杂的部分就是复合过程的定义和求值。复合过程的求值
+就是一个 eval 和 apply互相调用的过程。符合过程的定义跟变量的定义类似，
+只不过变量的值是一个 CompoundProcedure 对象的实例。创建
+CompoundProcedure 对象需要三个参数：环境，形参，过程体。
+
+\begin{verbatim}
+  rule define_function
+    lparen define lparen operator:symbol args:symbol+ rparen  body:expression rparen {
+      def eval(env)
+        env[operator.name] = CompoundProcedure.new(env, args, body)
+      end
+    }
+  end
+
+\end{verbatim}
+CompoundProcedure 的定义如下：
+\begin{verbatim}
+class CompoundProcedure < Treetop::Runtime::SyntaxNode
+
+  def initialize(env, args, body)
+    @env = env
+    @args = args.elements.map{ |arg| arg.name}
+    @body = body
+  end
+
+  def apply(*values)
+    raise SchemeSyntaxError.new("Parameter doesn't match") unless @args.size == values.size
+    @body.eval(extend_env(values))
+  end
+
+  private
+
+  def extend_env(values)
+    @env.merge([@args, values].transpose.
+               map{ |key, value| { key => value}}.
+               inject{|sum, value| sum.merge(value)})
+  end
+end
+
+\end{verbatim}
+
+复合过程的调用：
+\begin{verbatim}
+  rule function
+    lparen operator:expression operands:expressions rparen {
+      def eval(env)
+        operator.eval(env).
+          apply(*(operands.elements.map{ |value| value.eval }))
+      end
+    }
+  end
+\end{verbatim}
+\section{测试}
+
+我们还没有编写命令行环境来运行这个简单的解释器，不过可以编写测试代码来
+测试解释器。
+
+\end{document}

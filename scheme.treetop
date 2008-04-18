@@ -1,0 +1,168 @@
+
+grammar Scheme
+
+  rule program
+    expression expressions <Program>
+  end
+
+  rule defination
+    lparen define symbol space expression rparen {
+      def eval(env)
+        env[symbol.name] = expression.eval(env)
+      end
+    }
+  end
+
+  rule cons
+    lparen 'cons' car:expression  cdr:expression  rparen <Cons>
+  end
+
+  rule define_function
+    lparen define lparen operator:symbol args:symbol+ rparen  body:expression rparen {
+      def eval(env)
+        env[operator.name] = CompoundProcedure.new(env, args, body)
+      end
+    }
+  end
+
+  rule ruby_function
+    lparen define lparen operator:symbol args:symbol+ rparen ruby_exp rparen {
+      def eval(env)
+        env[operator.name] = RubyProcedure.new(env, args, ruby_exp)
+      end
+    }
+  end
+
+  rule ruby_exp
+    '@' symbol  {
+      def call(*args)
+        send(symbol.name, *args)
+      end
+    }
+  end
+
+  rule function
+    lparen operator:expression operands:expressions rparen {
+      def eval(env)
+        operator.eval(env).
+          apply(*(operands.elements.map{ |value| value.eval }))
+      end
+    }
+  end
+
+  rule define
+    space 'define' space
+  end
+
+  rule primary
+    plus / minus / multiply / divide
+  end
+
+  rule divide
+    lparen '/' dividend:expression divisor:expression  rparen {
+      def eval(env={})
+        dividend.eval(env) / divisor.eval(env)
+      end
+    }
+  end
+
+  rule multiply
+    lparen '*' expressions rparen {
+      def eval(env={})
+        expressions.exprs_value(env).inject{ |a, b| a * b}
+      end
+    }
+  end
+
+  rule minus
+    lparen '-' minuend:expression substractor:expression rparen {
+      def eval(env={})
+        minuend.eval(env) - substractor.eval(env)
+      end
+    }
+  end
+
+  rule plus
+    lparen '+' expressions  rparen {
+      def eval(env={})
+        expressions.exprs_value(env).inject{ |a, b| a + b}
+      end
+    }
+  end
+
+  rule atom
+    string / number / symbol
+  end
+
+  rule expression
+    space e:(atom / primary/ defination / cons/ define_function / ruby_function / function) space {
+      def eval(env = {})
+        e.eval(env)
+      end
+    }
+  end
+
+  rule expressions
+    expression* {
+      def exprs_value(env)
+        exprs.map{|e| e.eval(env)}
+      end
+
+      def exprs
+        elements
+      end
+    }
+  end
+
+  rule string
+    '"' (!'"' . / '\"')* '"' {
+      def eval(env={})
+        text_value[1..-2]
+      end
+    }
+  end
+
+  rule number
+    [1-9] [0-9]* {
+      def eval(env={})
+        text_value.to_f
+      end
+    }
+  end
+
+  rule lparen
+    space '(' space
+  end
+
+  rule rparen
+    space ')' space
+  end
+
+  rule symbol
+     space [a-z] ([a-z] / [0-9] / [_])* {
+       def eval(env)
+         env[name]
+       end
+
+       def name
+         text_value.strip
+       end
+     }
+   end
+
+
+
+  rule keyword
+    ('if' / 'else' / 'define') !non_space_char
+  end
+
+  rule non_space_char
+    ![ \n] .
+  end
+
+  rule space
+    [ \n]*
+  end
+
+
+end
